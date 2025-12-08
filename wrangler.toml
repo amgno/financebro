@@ -1,0 +1,14 @@
+name = "my-telegram-bot"
+main = "src/index.js"
+compatibility_date = "2024-12-08"
+
+# Durable Objects binding
+[[durable_objects.bindings]]
+name = "USER_STORAGE"
+class_name = "UserStorage"
+script_name = "my-telegram-bot"
+
+# Migrations per Durable Objects (SQLite per piano free)
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["UserStorage"]
