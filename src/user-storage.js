@@ -34,6 +34,13 @@ export class UserStorage {
           value TEXT
         )
       `);
+
+      // Migrazione rapida per aggiungere operation_date se manca (fix per database esistenti)
+      try {
+        this.sql.exec('ALTER TABLE transactions ADD COLUMN operation_date TEXT');
+      } catch (e) {
+        // Ignora errore se la colonna esiste già (SQLite non ha ADD COLUMN IF NOT EXISTS nativo semplice)
+      }
     }
   
     // Metodo chiamato dal Worker per gestire richieste
