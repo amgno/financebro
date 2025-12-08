@@ -7,18 +7,27 @@ export class UserStorage {
       // Inizializza database SQLite
       this.sql = this.state.storage.sql;
       
-      // Crea tabella se non esiste
+      // Crea tabella transazioni se non esiste
       this.sql.exec(`
         CREATE TABLE IF NOT EXISTS transactions (
           id TEXT PRIMARY KEY,
           type TEXT NOT NULL,
           ticker TEXT NOT NULL,
-          quantity INTEGER NOT NULL,
+          quantity REAL NOT NULL,
           price REAL NOT NULL,
+          operation_date TEXT NOT NULL,
           created_at TEXT NOT NULL
         )
       `);
       
+      // Tabella per rate limiting (reset giornaliero)
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS rate_limits (
+          date TEXT PRIMARY KEY,
+          count INTEGER DEFAULT 0
+        )
+      `);
+
       this.sql.exec(`
         CREATE TABLE IF NOT EXISTS settings (
           key TEXT PRIMARY KEY,
@@ -49,24 +58,91 @@ export class UserStorage {
         
         const id = `tx_${Date.now()}`;
         const createdAt = new Date().toISOString();
+        // Usa la data fornita o oggi come default
+        const operationDate = transaction.date || new Date().toISOString().split('T')[0];
         
         this.sql.exec(
-          `INSERT INTO transactions (id, type, ticker, quantity, price, created_at)
-           VALUES (?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO transactions (id, type, ticker, quantity, price, operation_date, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
           id,
           transaction.type,
           transaction.ticker,
           transaction.quantity,
           transaction.price,
+          operationDate,
           createdAt
         );
   
         return new Response(JSON.stringify({ 
           success: true, 
-          transaction: { id, ...transaction, created_at: createdAt }
+          transaction: { id, ...transaction, operation_date: operationDate, created_at: createdAt }
         }), {
           headers: { 'Content-Type': 'application/json' }
         });
+      }
+
+      // GET /rate-limit - Verifica limite giornaliero
+      if (path === '/rate-limit' && request.method === 'GET') {
+        const today = new Date().toISOString().split('T')[0];
+        // Usa prima toArray() per vedere se ci sono risultati
+        const results = this.sql.exec(
+          'SELECT count FROM rate_limits WHERE date = ?',
+          today
+        ).toArray();
+        
+        const count = results.length > 0 ? results[0].count : 0;
+        const limit = 20; // Default limit
+        
+        return new Response(JSON.stringify({ 
+          count, 
+          limit, 
+          remaining: Math.max(0, limit - count),
+          allowed: count < limit
+        }), {
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      // POST /rate-limit/increment - Incrementa contatore
+      if (path === '/rate-limit/increment' && request.method === 'POST') {
+        const today = new Date().toISOString().split('T')[0];
+        
+        this.sql.exec(
+          `INSERT INTO rate_limits (date, count) 
+           VALUES (?, 1) 
+           ON CONFLICT(date) DO UPDATE SET count = count + 1`,
+          today
+        );
+        
+        const newCount = this.sql.exec(
+          'SELECT count FROM rate_limits WHERE date = ?',
+          today
+        ).one().count;
+
+        return new Response(JSON.stringify({ count: newCount }), {
+            headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      // KV Store per dati temporanei (es. analisi espansa)
+      // GET /kv?key=...
+      if (path === '/kv' && request.method === 'GET') {
+        const key = url.searchParams.get('key');
+        const results = this.sql.exec('SELECT value FROM settings WHERE key = ?', key).toArray();
+        return new Response(JSON.stringify({ value: results.length > 0 ? results[0].value : null }), {
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      // POST /kv
+      if (path === '/kv' && request.method === 'POST') {
+        const { key, value } = await request.json();
+        this.sql.exec(
+          `INSERT INTO settings (key, value) VALUES (?, ?) 
+           ON CONFLICT(key) DO UPDATE SET value = ?`,
+          key, value, value
+        );
+        return new Response('OK', { status: 200 });
       }
   
       // GET /portfolio - Calcola portfolio corrente
