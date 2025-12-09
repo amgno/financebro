@@ -250,11 +250,39 @@ export class UserStorage {
     async sendMessage(chatId, text) {
       const url = `https://api.telegram.org/bot${this.env.TELEGRAM_BOT_TOKEN}/sendMessage`;
       
-      // Suddivide il messaggio in chunk se supera 4096 caratteri (limite Telegram)
-      const MAX_LENGTH = 4000; // Buffer di sicurezza
+      // Funzione helper per convertire Markdown in HTML supportato da Telegram
+      const toTelegramHTML = (md) => {
+        return md
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;') // Escape HTML chars first
+          .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')       // Bold
+          .replace(/^\s*#+\s+(.*)$/gm, '<b>$1</b>')     // Headers -> Bold
+          .replace(/__([^_]+)__/g, '<u>$1</u>')         // Underline
+          .replace(/\*([^*]+)\*/g, '<i>$1</i>')         // Italic
+          .replace(/`([^`]+)`/g, '<code>$1</code>')     // Inline Code
+          .replace(/```([\s\S]*?)```/g, '<pre>$1</pre>')// Block Code
+          .replace(/^\s*-\s/gm, '• ');                  // Lists
+      };
+
+      const formattedText = toTelegramHTML(text);
+      const MAX_LENGTH = 4000;
       
-      for (let i = 0; i < text.length; i += MAX_LENGTH) {
-        const chunk = text.substring(i, i + MAX_LENGTH);
+      let remainingText = formattedText;
+      
+      while (remainingText.length > 0) {
+        let chunk;
+        
+        if (remainingText.length <= MAX_LENGTH) {
+            chunk = remainingText;
+            remainingText = "";
+        } else {
+            let splitAt = remainingText.substring(0, MAX_LENGTH).lastIndexOf('\n');
+            if (splitAt === -1) splitAt = MAX_LENGTH;
+            chunk = remainingText.substring(0, splitAt);
+            remainingText = remainingText.substring(splitAt).trim();
+        }
+
         const body = { chat_id: chatId, text: chunk, parse_mode: 'HTML' };
         
         const response = await fetch(url, { 
@@ -265,8 +293,11 @@ export class UserStorage {
         
         if (!response.ok) {
            console.error(`[DO Alarm] Telegram Send Error: ${response.status}`, await response.text());
-           // Tentativo fallback senza HTML se fallisce per parsing error
+           
+           // Fallback: invia senza formattazione se ci sono errori HTML (es. tag tagliati dallo split)
            if (response.status === 400) {
+             // Rimuovi tag HTML per inviare testo pulito
+             body.text = chunk.replace(/<[^>]*>/g, '');
              body.parse_mode = undefined;
              await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
            }
