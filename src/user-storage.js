@@ -1,3 +1,5 @@
+import { analyzeStock } from './ai.js';
+
 // Durable Object: Storage isolato per ogni utente (SQLite)
 export class UserStorage {
     constructor(state, env) {
@@ -57,6 +59,20 @@ export class UserStorage {
         return new Response(JSON.stringify({ transactions }), {
           headers: { 'Content-Type': 'application/json' }
         });
+      }
+
+      // POST /schedule-analysis - Pianifica analisi in background
+      if (path === '/schedule-analysis' && request.method === 'POST') {
+        const payload = await request.json();
+        
+        // Salva lo stato del job pendente
+        await this.state.storage.put('pending_analysis', payload);
+        
+        // Imposta l'alarm per scattare tra 100ms
+        // Questo disaccoppia l'esecuzione dal Worker chiamante
+        await this.state.storage.setAlarm(Date.now() + 100);
+        
+        return new Response('Scheduled', { status: 200 });
       }
   
       // POST /transaction - Aggiungi una transazione
@@ -199,5 +215,41 @@ export class UserStorage {
   
       // Rimuovi posizioni chiuse
       return Object.values(positions).filter(p => p.quantity > 0);
+    }
+
+    // Alarm Handler: Esegue l'analisi in background
+    async alarm() {
+      const job = await this.state.storage.get('pending_analysis');
+      if (!job) return;
+      
+      const { ticker, chatId, budget, portfolio } = job;
+      
+      try {
+        console.log(`[DO Alarm] Starting analysis for ${ticker}...`);
+        
+        // Nota: Le API Keys devono essere passate o accessibili via this.env
+        // In Durable Objects, this.env contiene i bindings
+        
+        const fmpKey = this.env.FMP_API_KEY || 'Q2xs1jKWKU1RcbEGXxAKJgtxP5Q7tnM3';
+        const anthropicKey = this.env.ANTHROPIC_API_KEY;
+
+        const analysisText = await analyzeStock(ticker, anthropicKey, fmpKey, budget, portfolio);
+        
+        await this.sendMessage(chatId, analysisText);
+        
+        // Pulizia job
+        await this.state.storage.delete('pending_analysis');
+        console.log(`[DO Alarm] Analysis completed for ${ticker}`);
+
+      } catch (error) {
+        console.error('[DO Alarm] Analysis failed:', error);
+        await this.sendMessage(chatId, `⚠️ Errore durante l'analisi background: ${error.message}`);
+      }
+    }
+
+    async sendMessage(chatId, text) {
+      const url = `https://api.telegram.org/bot${this.env.TELEGRAM_BOT_TOKEN}/sendMessage`;
+      const body = { chat_id: chatId, text: text, parse_mode: 'HTML' };
+      await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     }
   }

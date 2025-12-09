@@ -1,5 +1,96 @@
 import { FMPClient } from './fmp.js';
 
+async function fetchAndAccumulateStream(url, options) {
+  const body = JSON.parse(options.body);
+  body.stream = true;
+  options.body = JSON.stringify(body);
+
+  const response = await fetch(url, options);
+  
+  if (!response.ok) {
+     const errorText = await response.text();
+     throw new Error(`Anthropic API Error: ${response.status} ${errorText}`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  
+  let finalContent = [];
+  let currentBlockIndex = null;
+  let stopReason = null;
+  let usage = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || ''; 
+
+    for (const line of lines) {
+      if (line.startsWith('data: ')) {
+        const dataStr = line.slice(6).trim();
+        if (dataStr === '[DONE]') continue;
+        
+        try {
+          const event = JSON.parse(dataStr);
+          
+          if (event.type === 'content_block_start') {
+            currentBlockIndex = event.index;
+            finalContent[currentBlockIndex] = event.content_block;
+            // Assicura che input sia inizializzato vuoto se è un tool_use
+            if (finalContent[currentBlockIndex].type === 'tool_use') {
+                finalContent[currentBlockIndex].input = "";
+            }
+          } else if (event.type === 'content_block_delta') {
+            const blockIndex = event.index;
+            const delta = event.delta;
+            
+            if (delta.type === 'text_delta') {
+               if (!finalContent[blockIndex]) finalContent[blockIndex] = { type: 'text', text: '' };
+               finalContent[blockIndex].text = (finalContent[blockIndex].text || '') + delta.text;
+            } else if (delta.type === 'input_json_delta') {
+               // Inizializza il blocco tool_use se non esiste
+               if (!finalContent[blockIndex]) {
+                 finalContent[blockIndex] = { type: 'tool_use', id: '', name: '', input: '' };
+               }
+               // Accumula JSON parziale come stringa
+               if (typeof finalContent[blockIndex].input !== 'string') {
+                   finalContent[blockIndex].input = ""; 
+               }
+               finalContent[blockIndex].input += delta.partial_json;
+            }
+          } else if (event.type === 'message_delta') {
+             if (event.delta.stop_reason) stopReason = event.delta.stop_reason;
+             if (event.usage) usage = event.usage;
+          }
+        } catch (e) {
+          console.error('SSE Parse Error', e);
+        }
+      }
+    }
+  }
+
+  finalContent = finalContent.map(block => {
+      if (block.type === 'tool_use' && typeof block.input === 'string') {
+          try {
+              block.input = JSON.parse(block.input);
+          } catch (e) {
+              console.error('Failed to parse tool input JSON', e);
+          }
+      }
+      return block;
+  });
+
+  return {
+    content: finalContent,
+    stop_reason: stopReason,
+    usage: usage
+  };
+}
+
 export async function analyzeStock(ticker, anthropicApiKey, fmpApiKey, budget, portfolio) {
   const fmp = new FMPClient(fmpApiKey);
   
@@ -134,6 +225,7 @@ Scegli LA MIGLIORE tra:
 - **NESSUNA SPECULAZIONE:** Se non trovi dati, dillo.
 - **SPECIFIC NUMBERS:** Prezzi esatti, date.
 - **RISK/REWARD:** Ogni BUY deve avere un piano chiaro.
+- **RISPETTA IL LIMITE DI 64000 TOKEN.**
 
 ## SE SCORE < 7: Alternative Analysis
 **COSA DEVE CAMBIARE PER DIVENTARE BUY:**
@@ -199,10 +291,11 @@ Formato Output Richiesto:
     { role: 'user', content: `Analizza ${ticker}` }
   ];
 
-  // Loop per gestire le chiamate ai tool (max 3 turni per evitare timeout worker)
   for (let i = 0; i < 3; i++) {
-    console.log(`[AI] Turn ${i+1} calling Anthropic...`);
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
+    console.log(`[AI] Turn ${i+1} calling Anthropic (Stream Mode)...`);
+    
+    // USIAMO LA FUNZIONE STREAM PER EVITARE TIMEOUT 524
+    const data = await fetchAndAccumulateStream('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
         'x-api-key': anthropicApiKey,
@@ -211,27 +304,24 @@ Formato Output Richiesto:
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-5-20250929',
-        max_tokens: 4000, // Aumentato token per report lungo
+        max_tokens: 64000,
         system: systemPrompt,
         messages: messages,
         tools: tools
       })
     });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error(`[AI] Anthropic API Error: ${response.status}`, errorText);
-      throw new Error(`Anthropic API Error: ${response.status} ${errorText}`);
-    }
-
-    const data = await response.json();
-    console.log(`[AI] Anthropic response received. Stop reason: ${data.stop_reason}`);
+    console.log(`[AI] Anthropic stream completed. Stop reason: ${data.stop_reason}`);
     const message = data;
     
-    // Aggiungi la risposta dell'assistente alla storia
     messages.push({ role: 'assistant', content: message.content });
 
-    // Se stop_reason è tool_use, esegui i tool
+    if (data.stop_reason === 'max_tokens') {
+        console.warn('[AI] Warning: Output truncated due to max_tokens limit.');
+        const contentText = message.content.find(b => b.type === 'text')?.text || '';
+        return contentText + "\n\n⚠️ [Analisi interrotta per limite lunghezza]";
+    }
+
     if (message.stop_reason === 'tool_use') {
       
       const toolPromises = message.content
@@ -253,11 +343,10 @@ Formato Output Richiesto:
                     dayHigh: raw.dayHigh,
                     marketCap: raw.marketCap,
                     volume: raw.volume,
-                    pe: raw.pe, // Se disponibile
-                    eps: raw.eps // Se disponibile
+                    pe: raw.pe,
+                    eps: raw.eps
                 } : { error: "No data" };
               } else if (toolName === 'get_historical_prices') {
-                // Prendiamo 30 giorni
                 const raw = await fmp.getHistoricalPrices(toolInput.ticker, 30);
                 result = raw.map(d => ({ date: d.date, open: d.open, high: d.high, low: d.low, close: d.close, volume: d.volume }));
               } else if (toolName === 'get_ticker_details') {
@@ -288,15 +377,10 @@ Formato Output Richiesto:
         });
 
       const toolResults = await Promise.all(toolPromises);
-      
-      // Costruiamo il messaggio di risposta con i risultati
       messages.push({ role: 'user', content: toolResults });
       
     } else {
-      // Risposta finale (text)
       const contentText = message.content.find(b => b.type === 'text')?.text || '';
-      
-      // Restituisci direttamente il testo completo
       return contentText;
     }
   }
@@ -330,8 +414,8 @@ Do not output any markdown formatting, just the JSON string.
         'content-type': 'application/json'
       },
       body: JSON.stringify({
-        model: 'claude-3-5-sonnet-20240620',
-        max_tokens: 500,
+        model: 'claude-sonnet-4-5-20250929',
+        max_tokens: 64000,
         messages: [
           {
             role: 'user',

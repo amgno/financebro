@@ -91,12 +91,10 @@ async function handleMessage(message, env) {
         return;
     }
 
-    await sendMessage(chatId, `🔍 Analisi AI in corso per ${tickers[0]}...`, env);
+    await sendMessage(chatId, `🔍 Analisi AI in corso per ${tickers[0]} (Background Job)...`, env);
     
     try {
         const ticker = tickers[0].toUpperCase();
-        // Fallback API Key se non in env
-        const fmpKey = env.FMP_API_KEY || 'Q2xs1jKWKU1RcbEGXxAKJgtxP5Q7tnM3';
         
         // Recupera Budget
         const budget = await getFromKV(userId, 'budget', env) || 'Non impostato';
@@ -107,9 +105,18 @@ async function handleMessage(message, env) {
         const portResponse = await stub.fetch('https://fake-url/portfolio');
         const portfolio = await portResponse.json();
 
-        const analysisText = await analyzeStock(ticker, env.ANTHROPIC_API_KEY, fmpKey, budget, portfolio);
+        // Pianifica analisi nel Durable Object via Alarm
+        await stub.fetch('https://fake-url/schedule-analysis', {
+            method: 'POST',
+            body: JSON.stringify({
+                ticker,
+                chatId,
+                budget,
+                portfolio
+            }),
+            headers: { 'Content-Type': 'application/json' }
+        });
         
-        await sendMessage(chatId, analysisText, env);
         await incrementRateLimit(userId, env);
         
     } catch (error) {
