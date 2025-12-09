@@ -249,7 +249,28 @@ export class UserStorage {
 
     async sendMessage(chatId, text) {
       const url = `https://api.telegram.org/bot${this.env.TELEGRAM_BOT_TOKEN}/sendMessage`;
-      const body = { chat_id: chatId, text: text, parse_mode: 'HTML' };
-      await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      
+      // Suddivide il messaggio in chunk se supera 4096 caratteri (limite Telegram)
+      const MAX_LENGTH = 4000; // Buffer di sicurezza
+      
+      for (let i = 0; i < text.length; i += MAX_LENGTH) {
+        const chunk = text.substring(i, i + MAX_LENGTH);
+        const body = { chat_id: chatId, text: chunk, parse_mode: 'HTML' };
+        
+        const response = await fetch(url, { 
+          method: 'POST', 
+          headers: { 'Content-Type': 'application/json' }, 
+          body: JSON.stringify(body) 
+        });
+        
+        if (!response.ok) {
+           console.error(`[DO Alarm] Telegram Send Error: ${response.status}`, await response.text());
+           // Tentativo fallback senza HTML se fallisce per parsing error
+           if (response.status === 400) {
+             body.parse_mode = undefined;
+             await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+           }
+        }
+      }
     }
   }
