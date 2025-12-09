@@ -37,6 +37,18 @@ export class UserStorage {
         )
       `);
 
+      // Tabella autorizzazioni (per password protection)
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS auth (
+            authorized INTEGER DEFAULT 0
+        )
+      `);
+      // Inserisce riga default se vuota - usando check count
+      const count = this.sql.exec('SELECT count(*) as c FROM auth').one().c;
+      if (count === 0) {
+          this.sql.exec('INSERT INTO auth (authorized) VALUES (0)');
+      }
+
       // Migrazione rapida per aggiungere operation_date se manca (fix per database esistenti)
       try {
         this.sql.exec('ALTER TABLE transactions ADD COLUMN operation_date TEXT');
@@ -166,6 +178,58 @@ export class UserStorage {
           key, value, value
         );
         return new Response('OK', { status: 200 });
+      }
+
+      // AUTH ENDPOINTS
+      if (path === '/is-authorized' && request.method === 'GET') {
+          // Usa .toArray() e controlla length invece di .one() che lancia eccezione se vuoto
+          const rows = this.sql.exec('SELECT authorized FROM auth').toArray();
+          const authorized = rows.length > 0 ? !!rows[0].authorized : false;
+          
+          return new Response(JSON.stringify({ authorized }), {
+              headers: { 'Content-Type': 'application/json' }
+          });
+      }
+
+      if (path === '/authorize' && request.method === 'POST') {
+          // Upsert logica: se esiste aggiorna, altrimenti inserisci
+          // Controlliamo prima se c'è una riga
+          const rows = this.sql.exec('SELECT * FROM auth').toArray();
+          if (rows.length === 0) {
+              this.sql.exec('INSERT INTO auth (authorized) VALUES (1)');
+          } else {
+              this.sql.exec('UPDATE auth SET authorized = 1');
+          }
+          return new Response('OK', { status: 200 });
+      }
+
+      if (path === '/deauthorize' && request.method === 'POST') {
+          this.sql.exec('UPDATE auth SET authorized = 0');
+          return new Response('OK', { status: 200 });
+      }
+
+      // SESSION ENDPOINTS
+      if (path === '/session' && request.method === 'GET') {
+          const userId = url.searchParams.get('userId');
+          const session = this.sql.exec('SELECT * FROM sessions WHERE user_id = ?', userId).one();
+          return new Response(JSON.stringify(session || null), { headers: { 'Content-Type': 'application/json' }});
+      }
+
+      if (path === '/session' && request.method === 'POST') {
+          const { userId, type, step, data } = await request.json();
+          this.sql.exec(
+            `INSERT INTO sessions (user_id, type, step, data) VALUES (?, ?, ?, ?)
+             ON CONFLICT(user_id) DO UPDATE SET type = ?, step = ?, data = ?`,
+            userId, type, step, JSON.stringify(data),
+            type, step, JSON.stringify(data)
+          );
+          return new Response('OK');
+      }
+
+      if (path === '/session' && request.method === 'DELETE') {
+          const userId = url.searchParams.get('userId');
+          this.sql.exec('DELETE FROM sessions WHERE user_id = ?', userId);
+          return new Response('OK');
       }
   
       // GET /portfolio - Calcola portfolio corrente con P&L live

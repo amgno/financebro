@@ -36,6 +36,43 @@ async function handleMessage(message, env) {
 
   console.log(`User ${userId} sent: ${text}`);
 
+  // Protezione Password
+  if (env.BOT_PASSWORD) {
+    const isAuthorized = await checkAuthorization(userId, env);
+
+    if (!isAuthorized) {
+        // Se l'utente invia la password corretta (testo esatto)
+        if (text && text.trim() === env.BOT_PASSWORD) {
+            await authorizeUser(userId, env);
+            await sendMessage(chatId, '✅ Password corretta! Benvenuto.', env);
+            
+            // Mostra subito il messaggio di benvenuto
+            await sendMessage(chatId, 
+              `🤖 Stock Analysis Bot\n\n` +
+              `Benvenuto! Sono il tuo assistente per l'analisi finanziaria.\n\n` +
+              `Usa /help per vedere i comandi.`,
+              env
+            );
+            return;
+        }
+
+        // Se l'utente invia /start, chiedi la password
+        if (text === '/start') {
+            await sendMessage(chatId, '🔒 Bot protetto. Inserisci la password per accedere:', env);
+        }
+        
+        // Se invia altro o password errata, ignora silenziosamente ("non fa niente")
+        return;
+    }
+  }
+
+  // Comando logout (solo se password protection attiva)
+  if (text === '/exit' && env.BOT_PASSWORD) {
+      await deauthorizeUser(userId, env);
+      await sendMessage(chatId, '🔒 Logout effettuato. A presto!', env);
+      return;
+  }
+
   if (text === '/start') {
     await sendMessage(chatId, 
       `🤖 Stock Analysis Bot\n\n` +
@@ -149,6 +186,82 @@ async function handleMessage(message, env) {
   await sendMessage(chatId, `❓ Comando non riconosciuto.`, env);
 }
 
+// Gestione passaggi interattivi
+async function handleInteractiveStep(chatId, userId, text, session, env) {
+    const data = JSON.parse(session.data || '{}');
+
+    // 1. Attesa Ticker
+    if (session.step === 'WAIT_TICKER') {
+        const ticker = text.trim().toUpperCase();
+        if (!/^[A-Z0-9]+$/.test(ticker)) {
+            await sendMessage(chatId, '⚠️ Ticker non valido. Riprova (es. AAPL):', env);
+            return;
+        }
+        data.ticker = ticker;
+        await setSession(userId, session.type, 'WAIT_PRICE', data, env);
+        await sendMessage(chatId, `✅ Ticker: <b>${ticker}</b>\n\nOra inserisci il <b>PREZZO</b> (es. 150.5):`, env);
+        return;
+    }
+
+    // 2. Attesa Prezzo
+    if (session.step === 'WAIT_PRICE') {
+        const price = parseFloat(text.replace(',', '.'));
+        if (isNaN(price) || price <= 0) {
+            await sendMessage(chatId, '⚠️ Prezzo non valido. Inserisci un numero positivo:', env);
+            return;
+        }
+        data.price = price;
+        await setSession(userId, session.type, 'WAIT_QTY', data, env);
+        await sendMessage(chatId, `✅ Prezzo: <b>$${price}</b>\n\nOra inserisci la <b>QUANTITÀ</b> (numero intero):`, env);
+        return;
+    }
+
+    // 3. Attesa Quantità
+    if (session.step === 'WAIT_QTY') {
+        const qty = parseInt(text);
+        if (isNaN(qty) || qty <= 0) {
+            await sendMessage(chatId, '⚠️ Quantità non valida. Inserisci un numero intero positivo:', env);
+            return;
+        }
+        
+        // Fine wizard
+        const transaction = {
+            type: session.type,
+            ticker: data.ticker,
+            price: data.price,
+            quantity: qty
+        };
+
+        // Puliamo sessione
+        await clearSession(userId, env);
+
+        // Chiamiamo la logica di conferma esistente
+        await handleTransactionConfirmation(chatId, userId, transaction, env);
+        return;
+    }
+}
+
+// Logica di conferma estratta per riutilizzo
+async function handleTransactionConfirmation(chatId, userId, transaction, env) {
+    console.log('Asking confirmation for:', transaction);
+    const message = 
+      `📝 Confermi questa operazione?\n\n` +
+      `${transaction.type === 'BUY' ? '🟢 ACQUISTO' : '🔴 VENDITA'}\n` +
+      `Ticker: ${transaction.ticker}\n` +
+      `Quantità: ${transaction.quantity}\n` +
+      `Prezzo: $${transaction.price.toFixed(2)}\n` +
+      `Totale: $${(transaction.quantity * transaction.price).toFixed(2)}`;
+  
+    const keyboard = {
+      inline_keyboard: [[
+        { text: '✅ Conferma', callback_data: `confirm_${JSON.stringify(transaction)}` },
+        { text: '❌ Annulla', callback_data: 'cancel' }
+      ]]
+    };
+  
+    await sendMessage(chatId, message, env, keyboard);
+}
+
 async function handleTradeInput(chatId, userId, text, env) {
   console.log(`Processing trade input: ${text}`);
   let transaction = null;
@@ -203,30 +316,15 @@ async function handleTradeInput(chatId, userId, text, env) {
     console.log('Transaction parsing failed completely.');
     await sendMessage(chatId, 
       `❌ Non ho capito l'operazione.\n\n` +
-      `Usa: /buy TICKER PREZZO [QTY]\n` +
-      `Es: /buy AAPL 150 10`,
+      `Usa i comandi interattivi:\n/buy o /sell\n\n` +
+      `Oppure scrivi esplicitamente:\n` +
+      `/buy AAPL 150 10`,
       env
     );
     return;
   }
 
-  console.log('Asking confirmation for:', transaction);
-  const message = 
-    `📝 Confermi questa operazione?\n\n` +
-    `${transaction.type === 'BUY' ? '🟢 ACQUISTO' : '🔴 VENDITA'}\n` +
-    `Ticker: ${transaction.ticker}\n` +
-    `Quantità: ${transaction.quantity}\n` +
-    `Prezzo: $${transaction.price.toFixed(2)}\n` +
-    `Totale: $${(transaction.quantity * transaction.price).toFixed(2)}`;
-
-  const keyboard = {
-    inline_keyboard: [[
-      { text: '✅ Conferma', callback_data: `confirm_${JSON.stringify(transaction)}` },
-      { text: '❌ Annulla', callback_data: 'cancel' }
-    ]]
-  };
-
-  await sendMessage(chatId, message, env, keyboard);
+  await handleTransactionConfirmation(chatId, userId, transaction, env);
 }
 
 async function handleCallback(callback, env) {
@@ -254,6 +352,26 @@ async function handleCallback(callback, env) {
   }
   
   await answerCallback(callback.id, env);
+}
+
+async function checkAuthorization(userId, env) {
+  const id = env.USER_STORAGE.idFromName(userId.toString());
+  const stub = env.USER_STORAGE.get(id);
+  const response = await stub.fetch('https://fake-url/is-authorized');
+  const data = await response.json();
+  return data.authorized;
+}
+
+async function authorizeUser(userId, env) {
+  const id = env.USER_STORAGE.idFromName(userId.toString());
+  const stub = env.USER_STORAGE.get(id);
+  await stub.fetch('https://fake-url/authorize', { method: 'POST' });
+}
+
+async function deauthorizeUser(userId, env) {
+  const id = env.USER_STORAGE.idFromName(userId.toString());
+  const stub = env.USER_STORAGE.get(id);
+  await stub.fetch('https://fake-url/deauthorize', { method: 'POST' });
 }
 
 async function showPortfolio(chatId, userId, env) {
@@ -366,4 +484,28 @@ async function editMessage(chatId, messageId, text, env) {
 async function answerCallback(callbackId, text = '', env) {
   const url = `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`;
   await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ callback_query_id: callbackId, text: text }) });
+}
+
+// Session Helpers
+async function getSession(userId, env) {
+    const id = env.USER_STORAGE.idFromName(userId.toString());
+    const stub = env.USER_STORAGE.get(id);
+    const res = await stub.fetch(`https://fake-url/session?userId=${userId}`);
+    return await res.json();
+}
+
+async function setSession(userId, type, step, data, env) {
+    const id = env.USER_STORAGE.idFromName(userId.toString());
+    const stub = env.USER_STORAGE.get(id);
+    await stub.fetch(`https://fake-url/session`, {
+        method: 'POST',
+        body: JSON.stringify({ userId, type, step, data }),
+        headers: { 'Content-Type': 'application/json' }
+    });
+}
+
+async function clearSession(userId, env) {
+    const id = env.USER_STORAGE.idFromName(userId.toString());
+    const stub = env.USER_STORAGE.get(id);
+    await stub.fetch(`https://fake-url/session?userId=${userId}`, { method: 'DELETE' });
 }
