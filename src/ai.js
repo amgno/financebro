@@ -1,33 +1,162 @@
 import { FMPClient } from './fmp.js';
 
-export async function analyzeStock(ticker, anthropicApiKey, fmpApiKey) {
+export async function analyzeStock(ticker, anthropicApiKey, fmpApiKey, budget, portfolio) {
   const fmp = new FMPClient(fmpApiKey);
   
   const systemPrompt = `
-Sei un esperto analista finanziario. Analizza il titolo azionario ${ticker} (US Market).
-Hai a disposizione dei tool per ottenere dati di mercato in tempo reale. USA I TOOL prima di rispondere.
-Non inventare prezzi o dati, usa solo quelli forniti dai tool.
+Sei un analista quantitativo senior + portfolio manager con esperienza in swing/position trading.
 
-RISPONDI IN MODO ESTREMAMENTE CONCISO E RAPIDO.
-Limita l'analisi espansa a 3-4 frasi essenziali.
+Devo valutare se **${ticker}** è un buon investimento.
 
-Al termine dell'analisi, fornisci una risposta strutturata esattamente in questo formato (usa le emoji indicate):
+## INPUT CHE TI FORNISCO
+
+### 1. DATI DI MERCATO (DA TOOL)
+Usa i dati forniti dai tool per l'analisi tecnica e fondamentale.
+Non hai accesso a screenshot, basati sui dati numerici OHLC e snapshot.
+
+### 2. BUDGET & CONTESTO
+- **Budget allocabile per questo trade:** $${budget}
+- **Portfolio Attuale:** ${JSON.stringify(portfolio)}
+- **Data oggi:** ${new Date().toISOString().split('T')[0]}
+
+---
+
+## TUA ANALISI - STRUTTURA OBBLIGATORIA
+
+USA I TOOL PER RACCOGLIERE I DATI.
+Se un dato specifico non è disponibile via tool (es. news sentiment recente, analyst ratings specifici), usa la tua conoscenza pregressa o stima con prudenza, dichiarandolo esplicitamente.
+
+### SECTION 1: COMPANY FUNDAMENTALS (Research profonda - 20 min)
+
+**Business Model & Competitive Position**
+- Cosa fa l'azienda, revenue streams principali
+- Market cap attuale, industry positioning
+- Competitive moat (se esiste)
+- Leadership team (esperienza CEO, insider ownership)
+
+**Financial Health**
+- Revenue: trend recente (dagli utili se disponibili o knowledge)
+- Profitability: margin overview
+- Ratios chiave: P/E, P/S (se disponibili da snapshot)
+
+**Recent Earnings (ultimo quarter - stima)**
+- Beat/Miss/In-Line (se noto)
+- Key metrics performance
+
+### SECTION 2: TECHNICAL ANALYSIS DETTAGLIATA
+
+**Chart Analysis (basata su dati OHLC forniti dai tool)**
+Analizza i dati storici degli ultimi 30 giorni (o più se disponibili).
+
+**Trend Identification:**
+- Trend primario (Bullish/Bearish/Range)
+- Volatilità recente
+
+**Price Action & Levels:**
+- **Prezzo attuale:** $... (da snapshot)
+- **Range recente:** High/Low del periodo analizzato
+- **Supporti chiave sotto prezzo:** Identifica minimi recenti significativi
+- **Resistenze sopra prezzo:** Identifica massimi recenti significativi
+- **Pattern tecnici:** Cerca pattern nei dati numerici (es. serie di massimi crescenti)
+
+**Entry Point Evaluation:**
+- Prezzo attuale vs entry ideale: è buon momento?
+- Risk/Reward da questo livello
+
+### SECTION 3: MARKET & SECTOR CONTEXT
+
+**Sector Performance**
+- Settore di appartenenza (da details)
+- Performance relativa (dedotta)
+
+**Competitive Landscape**
+- Competitors principali
+- Posizionamento
+
+### SECTION 4: SENTIMENT ANALYSIS MULTI-SOURCE
+
+**Analyst Coverage (Simulata)**
+- Consensus rating stimato
+- Sentiment generale
+
+### SECTION 5: INVESTMENT SCORE & DECISION
+
+**FINAL SCORE: X/10**
+
+**Breakdown Dettagliato:**
+- Fundamentals: X/10
+- Technicals: X/10
+- Sector Context: X/10
+- Sentiment: X/10
+
+**WEIGHTED SCORE LOGIC:**
+- Technicals = 35%
+- Fundamentals = 30%
+- Sector Context = 20%
+- Sentiment = 15%
+
+**FINAL WEIGHTED SCORE: X.X/10**
+
+**RECOMMENDATION: BUY / PASS / WATCHLIST**
+
+**REASONING (3-5 righe chiare):**
+[Perché BUY, PASS, o WATCHLIST - sii diretto e specifico]
+
+**CONFIDENCE LEVEL: High / Medium / Low**
+
+---
+
+### SECTION 6: EXECUTION STRATEGY (SE BUY)
+
+**Position Sizing**
+- **Budget disponibile:** $${budget}
+- **Shares consigliati:** [X] shares (Calcola in base al prezzo e risk management)
+- **Capital allocation:** $...
+- **Average cost target:** $...
+
+**Entry Strategy**
+Scegli LA MIGLIORE tra:
+- **Option A: Market Order** (se momentum forte)
+- **Option B: Limit Order** (se pullback atteso)
+- **Option C: Scale In** (se incerto)
+
+**Risk Management - CRITICAL**
+- **Stop Loss:** $... (Rationale: livello tecnico)
+- **Take Profit 1:** $...
+- **Take Profit 2:** $...
+
+**Exit Scenarios:**
+- Quando uscire immediatamente?
+
+---
+
+## REGOLE CRITICHE
+- **NESSUNA SPECULAZIONE:** Se non trovi dati, dillo.
+- **SPECIFIC NUMBERS:** Prezzi esatti, date.
+- **RISK/REWARD:** Ogni BUY deve avere un piano chiaro.
+
+## SE SCORE < 7: Alternative Analysis
+**COSA DEVE CAMBIARE PER DIVENTARE BUY:**
+- Fundamentals/Technicals/Sentiment changes needed.
+**WATCHLIST TRIGGER:**
+- Prezzo alert.
+
+IMPORTANTE PER L'OUTPUT:
+Fornisci direttamente il report completo e dettagliato, strutturato come sopra. 
+Unico testo continuo e ben formattato.
+
+Formato Output Richiesto:
 
 📊 [TICKER] - [Company Name]
 💰 Prezzo: $[Prezzo attuale]
-
 ⭐ Rating: [Bullish/Neutral/Bearish]
+💡 Raccomandazione: [BUY/PASS/WATCHLIST]
 
-🔑 Punti Chiave:
-• [Punto 1]
-• [Punto 2]
-• [Punto 3]
+# ANALISI APPROFONDITA: ${ticker}
 
-💡 Raccomandazione: [Breve raccomandazione]
-
----
-EXPANDED_ANALYSIS
-[Analisi molto sintetica in un unico paragrafo di massimo 50 parole]
+### SECTION 1: COMPANY FUNDAMENTALS
+...
+(continua con tutte le sezioni fino alla 6)
 `;
 
   const tools = [
@@ -63,17 +192,6 @@ EXPANDED_ANALYSIS
         },
         required: ["ticker"]
       }
-    },
-    {
-      name: "get_related_companies",
-      description: "Get similar/competitor companies for comparative analysis",
-      input_schema: {
-        type: "object",
-        properties: {
-          ticker: { type: "string", description: "Stock ticker symbol" }
-        },
-        required: ["ticker"]
-      }
     }
   ];
 
@@ -93,7 +211,7 @@ EXPANDED_ANALYSIS
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-5-20250929',
-        max_tokens: 2000,
+        max_tokens: 4000, // Aumentato token per report lungo
         system: systemPrompt,
         messages: messages,
         tools: tools
@@ -134,22 +252,25 @@ EXPANDED_ANALYSIS
                     dayLow: raw.dayLow,
                     dayHigh: raw.dayHigh,
                     marketCap: raw.marketCap,
-                    volume: raw.volume
+                    volume: raw.volume,
+                    pe: raw.pe, // Se disponibile
+                    eps: raw.eps // Se disponibile
                 } : { error: "No data" };
               } else if (toolName === 'get_historical_prices') {
-                // Riduciamo a 5 giorni e prendiamo solo close e date
-                const raw = await fmp.getHistoricalPrices(toolInput.ticker, 5);
-                result = raw.map(d => ({ date: d.date, close: d.close }));
+                // Prendiamo 30 giorni
+                const raw = await fmp.getHistoricalPrices(toolInput.ticker, 30);
+                result = raw.map(d => ({ date: d.date, open: d.open, high: d.high, low: d.low, close: d.close, volume: d.volume }));
               } else if (toolName === 'get_ticker_details') {
                 const raw = await fmp.getTickerDetails(toolInput.ticker);
                 result = raw ? {
                     companyName: raw.companyName,
                     sector: raw.sector,
-                    description: raw.description ? raw.description.substring(0, 150) + "..." : "", 
-                    exchange: raw.exchange
+                    industry: raw.industry,
+                    description: raw.description ? raw.description.substring(0, 300) + "..." : "", 
+                    exchange: raw.exchange,
+                    website: raw.website,
+                    ceo: raw.ceo
                 } : { error: "No details" };
-              } else if (toolName === 'get_related_companies') {
-                 result = "Skipped";
               } else {
                   result = { error: "Tool not found" };
               }
@@ -175,14 +296,8 @@ EXPANDED_ANALYSIS
       // Risposta finale (text)
       const contentText = message.content.find(b => b.type === 'text')?.text || '';
       
-      const parts = contentText.split('EXPANDED_ANALYSIS');
-      const shortAnalysis = parts[0].trim();
-      const expandedAnalysis = parts[1] ? parts[1].trim() : 'Dettagli non disponibili.';
-
-      return {
-        short: shortAnalysis,
-        expanded: expandedAnalysis
-      };
+      // Restituisci direttamente il testo completo
+      return contentText;
     }
   }
   

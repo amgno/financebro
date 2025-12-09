@@ -97,17 +97,19 @@ async function handleMessage(message, env) {
         const ticker = tickers[0].toUpperCase();
         // Fallback API Key se non in env
         const fmpKey = env.FMP_API_KEY || 'Q2xs1jKWKU1RcbEGXxAKJgtxP5Q7tnM3';
-        const analysis = await analyzeStock(ticker, env.ANTHROPIC_API_KEY, fmpKey);
         
-        await saveToKV(userId, `analysis_${ticker}`, analysis.expanded, env);
+        // Recupera Budget
+        const budget = await getFromKV(userId, 'budget', env) || 'Non impostato';
+
+        // Recupera Portfolio
+        const id = env.USER_STORAGE.idFromName(userId.toString());
+        const stub = env.USER_STORAGE.get(id);
+        const portResponse = await stub.fetch('https://fake-url/portfolio');
+        const portfolio = await portResponse.json();
+
+        const analysisText = await analyzeStock(ticker, env.ANTHROPIC_API_KEY, fmpKey, budget, portfolio);
         
-        const keyboard = {
-            inline_keyboard: [[
-                { text: '📊 Analisi completa', callback_data: `expand_${ticker}` }
-            ]]
-        };
-        
-        await sendMessage(chatId, analysis.short, env, keyboard);
+        await sendMessage(chatId, analysisText, env);
         await incrementRateLimit(userId, env);
         
     } catch (error) {
@@ -244,17 +246,6 @@ async function handleCallback(callback, env) {
     return;
   }
   
-  if (data.startsWith('expand_')) {
-    const ticker = data.replace('expand_', '');
-    const expandedText = await getFromKV(userId, `analysis_${ticker}`, env);
-    if (expandedText) {
-        await editMessage(chatId, messageId, `📊 ${ticker} - Analisi Completa\n\n${expandedText}`, env);
-    } else {
-        await answerCallback(callback.id, 'Analisi non trovata.', env);
-    }
-    return;
-  }
-
   await answerCallback(callback.id, env);
 }
 
