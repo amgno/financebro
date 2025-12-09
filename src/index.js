@@ -51,11 +51,30 @@ async function handleMessage(message, env) {
       `🤖 Comandi:\n\n` +
       `📊 /analyze TICKER - Analisi AI\n` +
       `💼 /portfolio - Visualizza portfolio\n` +
+      `💰 /setbudget AMOUNT - Imposta budget\n` +
       `🟢 /buy TICKER PRICE QTY - Acquista\n` +
       `🔴 /sell TICKER PRICE QTY - Vendi\n\n` +
       `O scrivi in linguaggio naturale:\n"Ho comprato 10 AAPL a 150"`,
       env
     );
+    return;
+  }
+
+  if (text && text.startsWith('/setbudget')) {
+    const parts = text.split(/\s+/);
+    if (parts.length < 2) {
+      await sendMessage(chatId, '❌ Specifica un importo. Es: /setbudget 10000', env);
+      return;
+    }
+    
+    const amount = parseFloat(parts[1]);
+    if (isNaN(amount) || amount < 0) {
+      await sendMessage(chatId, '❌ Importo non valido. Inserisci un numero positivo.', env);
+      return;
+    }
+
+    await saveToKV(userId, 'budget', amount.toString(), env);
+    await sendMessage(chatId, `✅ Budget impostato a $${amount.toFixed(2)}`, env);
     return;
   }
 
