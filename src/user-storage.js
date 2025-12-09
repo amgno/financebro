@@ -168,14 +168,80 @@ export class UserStorage {
         return new Response('OK', { status: 200 });
       }
   
-      // GET /portfolio - Calcola portfolio corrente
+      // GET /portfolio - Calcola portfolio corrente con P&L live
       if (path === '/portfolio' && request.method === 'GET') {
         const transactions = this.sql.exec(
           'SELECT * FROM transactions ORDER BY created_at ASC'
         ).toArray();
         
-        // Calcola posizioni (logica semplificata)
-        const positions = this.calculatePositions(transactions);
+        // 1. Calcola posizioni base (Quantità e Prezzo Medio)
+        let positions = this.calculatePositions(transactions);
+
+        // Inizializza con valori default (Safe Mode)
+        positions = positions.map(p => ({
+            ...p,
+            currentPrice: p.avgPrice,
+            currentValue: p.totalCost,
+            profitLoss: 0,
+            profitLossPercent: 0
+        }));
+
+        if (positions.length > 0) {
+            // 2. Recupera prezzi live da FMP
+            try {
+                const fmpKey = this.env.FMP_API_KEY || 'Q2xs1jKWKU1RcbEGXxAKJgtxP5Q7tnM3';
+                const tickers = positions.map(p => p.ticker).join(',');
+                
+                console.log(`[Portfolio] Fetching prices for: ${tickers}`);
+
+                // Usa endpoint 'stable' e parametro 'symbol' come in fmp.js (che sappiamo funzionare)
+                const fmpResponse = await fetch(`https://financialmodelingprep.com/stable/quote?symbol=${tickers}&apikey=${fmpKey}`);
+                
+                if (!fmpResponse.ok) {
+                    const errText = await fmpResponse.text();
+                    console.error(`[Portfolio] FMP Error ${fmpResponse.status}: ${errText}`);
+                    throw new Error(`API Error: ${fmpResponse.status}`);
+                }
+                
+                const quotes = await fmpResponse.json();
+                
+                if (!Array.isArray(quotes)) {
+                    console.error('[Portfolio] Invalid API response format:', quotes);
+                    throw new Error('Invalid API response');
+                }
+
+                // Mappa per accesso rapido
+                const priceMap = {};
+                quotes.forEach(q => priceMap[q.symbol] = q.price);
+                
+                console.log(`[Portfolio] Prices found:`, Object.keys(priceMap));
+
+                // 3. Arricchisci posizioni con P&L reale
+                positions = positions.map(p => {
+                    const currentPrice = priceMap[p.ticker];
+                    
+                    if (currentPrice === undefined) {
+                        console.warn(`[Portfolio] No price found for ${p.ticker}, using avgPrice`);
+                        return p; // Mantiene i valori default (0 P&L)
+                    }
+
+                    const currentValue = p.quantity * currentPrice;
+                    const profitLoss = currentValue - p.totalCost;
+                    const profitLossPercent = p.avgPrice > 0 ? ((currentPrice - p.avgPrice) / p.avgPrice) * 100 : 0;
+
+                    return {
+                        ...p,
+                        currentPrice,
+                        currentValue,
+                        profitLoss,
+                        profitLossPercent
+                    };
+                });
+            } catch (e) {
+                console.error('[Portfolio] Error fetching prices:', e);
+                // Continua con i valori di default
+            }
+        }
   
         return new Response(JSON.stringify({ positions }), {
           headers: { 'Content-Type': 'application/json' }

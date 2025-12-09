@@ -267,11 +267,45 @@ async function showPortfolio(chatId, userId, env) {
     return;
   }
 
-  let message = `📊 Il tuo Portfolio\n\n`;
+  let message = `📊 <b>IL TUO PORTFOLIO</b>\n\n`;
+  
+  let totalValue = 0;
+  let totalCost = 0;
+
+  // Header Tabella (usiamo monospace per "simulare" colonne)
+  message += `<pre>`;
+  message += `TICKER |   P&L %  |   PROFIT\n`;
+  message += `-------+----------+----------\n`;
+
   for (const pos of data.positions) {
-    message += `${pos.ticker}: ${pos.quantity} pz\n`;
-    message += `  Media: $${pos.avgPrice.toFixed(2)} | Tot: $${pos.totalCost.toFixed(2)}\n\n`;
+    const isProfit = pos.profitLoss >= 0;
+    const emoji = isProfit ? '🟢' : '🔴';
+    const sign = isProfit ? '+' : '';
+    
+    // Tronchiamo i valori per stare nella riga
+    const ticker = pos.ticker.padEnd(6, ' ');
+    const plPerc = `${sign}${pos.profitLossPercent.toFixed(1)}%`.padStart(8, ' ');
+    const plAbs = `${sign}$${Math.abs(pos.profitLoss).toFixed(0)}`.padStart(8, ' ');
+    
+    message += `${ticker} | ${plPerc} | ${plAbs} ${emoji}\n`;
+
+    // Aggiungiamo riga dettagli sotto
+    // message += `       ${pos.quantity}pz @ $${pos.currentPrice.toFixed(2)}\n`; 
+
+    totalValue += pos.currentValue;
+    totalCost += pos.totalCost;
   }
+  
+  message += `</pre>\n`;
+
+  // Totali
+  const totalPL = totalValue - totalCost;
+  const totalPLPerc = totalCost > 0 ? (totalPL / totalCost) * 100 : 0;
+  const totalEmoji = totalPL >= 0 ? '🚀' : '📉';
+
+  message += `\n💰 <b>TOTALE: $${totalValue.toFixed(2)}</b>\n`;
+  message += `P&L: ${totalPL >= 0 ? '+' : ''}$${totalPL.toFixed(2)} (${totalPL >= 0 ? '+' : ''}${totalPLPerc.toFixed(2)}%) ${totalEmoji}`;
+
   await sendMessage(chatId, message, env);
 }
 
