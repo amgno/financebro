@@ -1,5 +1,6 @@
 import { UserStorage } from './user-storage.js';
 import { analyzeStock, parseTradeCommand } from './ai.js';
+import { sendMessage, editMessage, answerCallback } from './telegram.js';
 
 export { UserStorage };
 
@@ -44,21 +45,21 @@ async function handleMessage(message, env) {
         // Se l'utente invia la password corretta (testo esatto)
         if (text && text.trim() === env.BOT_PASSWORD) {
             await authorizeUser(userId, env);
-            await sendMessage(chatId, '✅ Password corretta! Benvenuto.', env);
+            await sendMessage(chatId, '✅ Password corretta! Benvenuto.', env.TELEGRAM_BOT_TOKEN);
             
             // Mostra subito il messaggio di benvenuto
             await sendMessage(chatId, 
               `🤖 Stock Analysis Bot\n\n` +
               `Benvenuto! Sono il tuo assistente per l'analisi finanziaria.\n\n` +
               `Usa /help per vedere i comandi.`,
-              env
+              env.TELEGRAM_BOT_TOKEN
             );
             return;
         }
 
         // Se l'utente invia /start, chiedi la password
         if (text === '/start') {
-            await sendMessage(chatId, '🔒 Bot protetto. Inserisci la password per accedere:', env);
+            await sendMessage(chatId, '🔒 Bot protetto. Inserisci la password per accedere:', env.TELEGRAM_BOT_TOKEN);
         }
         
         // Se invia altro o password errata, ignora silenziosamente ("non fa niente")
@@ -69,7 +70,7 @@ async function handleMessage(message, env) {
   // Comando logout (solo se password protection attiva)
   if (text === '/exit' && env.BOT_PASSWORD) {
       await deauthorizeUser(userId, env);
-      await sendMessage(chatId, '🔒 Logout effettuato. A presto!', env);
+      await sendMessage(chatId, '🔒 Logout effettuato. A presto!', env.TELEGRAM_BOT_TOKEN);
       return;
   }
 
@@ -78,7 +79,7 @@ async function handleMessage(message, env) {
       `🤖 Stock Analysis Bot\n\n` +
       `Benvenuto! Sono il tuo assistente per l'analisi finanziaria.\n\n` +
       `Usa /help per vedere i comandi.`,
-      env
+      env.TELEGRAM_BOT_TOKEN
     );
     return;
   }
@@ -92,7 +93,7 @@ async function handleMessage(message, env) {
       `🟢 /buy TICKER PRICE QTY - Acquista\n` +
       `🔴 /sell TICKER PRICE QTY - Vendi\n\n` +
       `O scrivi in linguaggio naturale:\n"Ho comprato 10 AAPL a 150"`,
-      env
+      env.TELEGRAM_BOT_TOKEN
     );
     return;
   }
@@ -100,35 +101,35 @@ async function handleMessage(message, env) {
   if (text && text.startsWith('/setbudget')) {
     const parts = text.split(/\s+/);
     if (parts.length < 2) {
-      await sendMessage(chatId, '❌ Specifica un importo. Es: /setbudget 10000', env);
+      await sendMessage(chatId, '❌ Specifica un importo. Es: /setbudget 10000', env.TELEGRAM_BOT_TOKEN);
       return;
     }
     
     const amount = parseFloat(parts[1]);
     if (isNaN(amount) || amount < 0) {
-      await sendMessage(chatId, '❌ Importo non valido. Inserisci un numero positivo.', env);
+      await sendMessage(chatId, '❌ Importo non valido. Inserisci un numero positivo.', env.TELEGRAM_BOT_TOKEN);
       return;
     }
 
     await saveToKV(userId, 'budget', amount.toString(), env);
-    await sendMessage(chatId, `✅ Budget impostato a $${amount.toFixed(2)}`, env);
+    await sendMessage(chatId, `✅ Budget impostato a $${amount.toFixed(2)}`, env.TELEGRAM_BOT_TOKEN);
     return;
   }
 
   if (text && text.startsWith('/analyze')) {
     const tickers = text.replace('/analyze', '').trim().split(/\s+/);
     if (tickers.length === 0 || tickers[0] === '') {
-        await sendMessage(chatId, '❌ Inserisci un ticker. Es: /analyze AAPL', env);
+        await sendMessage(chatId, '❌ Inserisci un ticker. Es: /analyze AAPL', env.TELEGRAM_BOT_TOKEN);
         return;
     }
     
     const allowed = await checkRateLimit(userId, env);
     if (!allowed) {
-        await sendMessage(chatId, '⏸️ Limite giornaliero raggiunto.', env);
+        await sendMessage(chatId, '⏸️ Limite giornaliero raggiunto.', env.TELEGRAM_BOT_TOKEN);
         return;
     }
 
-    await sendMessage(chatId, `🔍 Analisi AI in corso per ${tickers[0]} (Background Job)...`, env);
+    await sendMessage(chatId, `🔍 Analisi AI in corso per ${tickers[0]} (Background Job)...`, env.TELEGRAM_BOT_TOKEN);
     
     try {
         const ticker = tickers[0].toUpperCase();
@@ -158,7 +159,7 @@ async function handleMessage(message, env) {
         
     } catch (error) {
         console.error('Analysis error:', error);
-        await sendMessage(chatId, `⚠️ Errore analisi: ${error.message}`, env);
+        await sendMessage(chatId, `⚠️ Errore analisi: ${error.message}`, env.TELEGRAM_BOT_TOKEN);
     }
     return;
   }
@@ -183,62 +184,7 @@ async function handleMessage(message, env) {
     return;
   }
 
-  await sendMessage(chatId, `❓ Comando non riconosciuto.`, env);
-}
-
-// Gestione passaggi interattivi
-async function handleInteractiveStep(chatId, userId, text, session, env) {
-    const data = JSON.parse(session.data || '{}');
-
-    // 1. Attesa Ticker
-    if (session.step === 'WAIT_TICKER') {
-        const ticker = text.trim().toUpperCase();
-        if (!/^[A-Z0-9]+$/.test(ticker)) {
-            await sendMessage(chatId, '⚠️ Ticker non valido. Riprova (es. AAPL):', env);
-            return;
-        }
-        data.ticker = ticker;
-        await setSession(userId, session.type, 'WAIT_PRICE', data, env);
-        await sendMessage(chatId, `✅ Ticker: <b>${ticker}</b>\n\nOra inserisci il <b>PREZZO</b> (es. 150.5):`, env);
-        return;
-    }
-
-    // 2. Attesa Prezzo
-    if (session.step === 'WAIT_PRICE') {
-        const price = parseFloat(text.replace(',', '.'));
-        if (isNaN(price) || price <= 0) {
-            await sendMessage(chatId, '⚠️ Prezzo non valido. Inserisci un numero positivo:', env);
-            return;
-        }
-        data.price = price;
-        await setSession(userId, session.type, 'WAIT_QTY', data, env);
-        await sendMessage(chatId, `✅ Prezzo: <b>$${price}</b>\n\nOra inserisci la <b>QUANTITÀ</b> (numero intero):`, env);
-        return;
-    }
-
-    // 3. Attesa Quantità
-    if (session.step === 'WAIT_QTY') {
-        const qty = parseInt(text);
-        if (isNaN(qty) || qty <= 0) {
-            await sendMessage(chatId, '⚠️ Quantità non valida. Inserisci un numero intero positivo:', env);
-            return;
-        }
-        
-        // Fine wizard
-        const transaction = {
-            type: session.type,
-            ticker: data.ticker,
-            price: data.price,
-            quantity: qty
-        };
-
-        // Puliamo sessione
-        await clearSession(userId, env);
-
-        // Chiamiamo la logica di conferma esistente
-        await handleTransactionConfirmation(chatId, userId, transaction, env);
-        return;
-    }
+  await sendMessage(chatId, `❓ Comando non riconosciuto.`, env.TELEGRAM_BOT_TOKEN);
 }
 
 // Logica di conferma estratta per riutilizzo
@@ -259,7 +205,7 @@ async function handleTransactionConfirmation(chatId, userId, transaction, env) {
       ]]
     };
   
-    await sendMessage(chatId, message, env, keyboard);
+    await sendMessage(chatId, message, env.TELEGRAM_BOT_TOKEN, { replyMarkup: keyboard });
 }
 
 async function handleTradeInput(chatId, userId, text, env) {
@@ -319,7 +265,7 @@ async function handleTradeInput(chatId, userId, text, env) {
       `Usa i comandi interattivi:\n/buy o /sell\n\n` +
       `Oppure scrivi esplicitamente:\n` +
       `/buy AAPL 150 10`,
-      env
+      env.TELEGRAM_BOT_TOKEN
     );
     return;
   }
@@ -334,8 +280,8 @@ async function handleCallback(callback, env) {
   const data = callback.data;
 
   if (data === 'cancel') {
-    await editMessage(chatId, messageId, '❌ Operazione annullata.', env);
-    await answerCallback(callback.id, env);
+    await editMessage(chatId, messageId, '❌ Operazione annullata.', env.TELEGRAM_BOT_TOKEN);
+    await answerCallback(callback.id, env.TELEGRAM_BOT_TOKEN);
     return;
   }
 
@@ -345,13 +291,13 @@ async function handleCallback(callback, env) {
     await editMessage(chatId, messageId, 
       `✅ Operazione salvata!\n` +
       `${transaction.type} ${transaction.quantity}x ${transaction.ticker} @ $${transaction.price}`,
-      env
+      env.TELEGRAM_BOT_TOKEN
     );
-    await answerCallback(callback.id, 'Salvato!', env);
+    await answerCallback(callback.id, env.TELEGRAM_BOT_TOKEN, 'Salvato!');
     return;
   }
   
-  await answerCallback(callback.id, env);
+  await answerCallback(callback.id, env.TELEGRAM_BOT_TOKEN);
 }
 
 async function checkAuthorization(userId, env) {
@@ -381,7 +327,7 @@ async function showPortfolio(chatId, userId, env) {
   const data = await response.json();
 
   if (data.positions.length === 0) {
-    await sendMessage(chatId, `📊 Portfolio vuoto.`, env);
+    await sendMessage(chatId, `📊 Portfolio vuoto.`, env.TELEGRAM_BOT_TOKEN);
     return;
   }
 
@@ -424,7 +370,7 @@ async function showPortfolio(chatId, userId, env) {
   message += `\n💰 <b>TOTALE: $${totalValue.toFixed(2)}</b>\n`;
   message += `P&L: ${totalPL >= 0 ? '+' : ''}$${totalPL.toFixed(2)} (${totalPL >= 0 ? '+' : ''}${totalPLPerc.toFixed(2)}%) ${totalEmoji}`;
 
-  await sendMessage(chatId, message, env);
+  await sendMessage(chatId, message, env.TELEGRAM_BOT_TOKEN);
 }
 
 async function saveTransaction(userId, transaction, env) {
@@ -467,45 +413,4 @@ async function getFromKV(userId, key, env) {
   const response = await stub.fetch(`https://fake-url/kv?key=${key}`);
   const data = await response.json();
   return data.value;
-}
-
-async function sendMessage(chatId, text, env, replyMarkup = null) {
-  const url = `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`;
-  const body = { chat_id: chatId, text: text, parse_mode: 'HTML' };
-  if (replyMarkup) body.reply_markup = replyMarkup;
-  await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-}
-
-async function editMessage(chatId, messageId, text, env) {
-  const url = `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`;
-  await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: chatId, message_id: messageId, text: text, parse_mode: 'HTML' }) });
-}
-
-async function answerCallback(callbackId, text = '', env) {
-  const url = `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`;
-  await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ callback_query_id: callbackId, text: text }) });
-}
-
-// Session Helpers
-async function getSession(userId, env) {
-    const id = env.USER_STORAGE.idFromName(userId.toString());
-    const stub = env.USER_STORAGE.get(id);
-    const res = await stub.fetch(`https://fake-url/session?userId=${userId}`);
-    return await res.json();
-}
-
-async function setSession(userId, type, step, data, env) {
-    const id = env.USER_STORAGE.idFromName(userId.toString());
-    const stub = env.USER_STORAGE.get(id);
-    await stub.fetch(`https://fake-url/session`, {
-        method: 'POST',
-        body: JSON.stringify({ userId, type, step, data }),
-        headers: { 'Content-Type': 'application/json' }
-    });
-}
-
-async function clearSession(userId, env) {
-    const id = env.USER_STORAGE.idFromName(userId.toString());
-    const stub = env.USER_STORAGE.get(id);
-    await stub.fetch(`https://fake-url/session?userId=${userId}`, { method: 'DELETE' });
 }

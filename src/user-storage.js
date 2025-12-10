@@ -1,4 +1,5 @@
 import { analyzeStock } from './ai.js';
+import { sendMessage } from './telegram.js';
 
 // Durable Object: Storage isolato per ogni utente (SQLite)
 export class UserStorage {
@@ -48,6 +49,16 @@ export class UserStorage {
       if (count === 0) {
           this.sql.exec('INSERT INTO auth (authorized) VALUES (0)');
       }
+
+      // Tabella sessioni per wizard interattivi (se necessaria in futuro)
+      this.sql.exec(`
+        CREATE TABLE IF NOT EXISTS sessions (
+          user_id TEXT PRIMARY KEY,
+          type TEXT,
+          step TEXT,
+          data TEXT
+        )
+      `);
 
       // Migrazione rapida per aggiungere operation_date se manca (fix per database esistenti)
       try {
@@ -253,7 +264,10 @@ export class UserStorage {
         if (positions.length > 0) {
             // 2. Recupera prezzi live da FMP
             try {
-                const fmpKey = this.env.FMP_API_KEY || 'Q2xs1jKWKU1RcbEGXxAKJgtxP5Q7tnM3';
+                const fmpKey = this.env.FMP_API_KEY;
+                if (!fmpKey) {
+                    throw new Error('FMP_API_KEY non configurata');
+                }
                 const tickers = positions.map(p => p.ticker).join(',');
                 
                 console.log(`[Portfolio] Fetching prices for: ${tickers}`);
@@ -360,8 +374,12 @@ export class UserStorage {
         // Nota: Le API Keys devono essere passate o accessibili via this.env
         // In Durable Objects, this.env contiene i bindings
         
-        const fmpKey = this.env.FMP_API_KEY || 'Q2xs1jKWKU1RcbEGXxAKJgtxP5Q7tnM3';
+        const fmpKey = this.env.FMP_API_KEY;
         const anthropicKey = this.env.ANTHROPIC_API_KEY;
+        
+        if (!fmpKey || !anthropicKey) {
+            throw new Error('API Keys non configurate correttamente');
+        }
 
         const analysisText = await analyzeStock(ticker, anthropicKey, fmpKey, budget, portfolio);
         
@@ -378,60 +396,7 @@ export class UserStorage {
     }
 
     async sendMessage(chatId, text) {
-      const url = `https://api.telegram.org/bot${this.env.TELEGRAM_BOT_TOKEN}/sendMessage`;
-      
-      // Funzione helper per convertire Markdown in HTML supportato da Telegram
-      const toTelegramHTML = (md) => {
-        return md
-          .replace(/&/g, '&amp;')
-          .replace(/</g, '&lt;')
-          .replace(/>/g, '&gt;') // Escape HTML chars first
-          .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')       // Bold
-          .replace(/^\s*#+\s+(.*)$/gm, '<b>$1</b>')     // Headers -> Bold
-          .replace(/__([^_]+)__/g, '<u>$1</u>')         // Underline
-          .replace(/\*([^*]+)\*/g, '<i>$1</i>')         // Italic
-          .replace(/`([^`]+)`/g, '<code>$1</code>')     // Inline Code
-          .replace(/```([\s\S]*?)```/g, '<pre>$1</pre>')// Block Code
-          .replace(/^\s*-\s/gm, '• ');                  // Lists
-      };
-
-      const formattedText = toTelegramHTML(text);
-      const MAX_LENGTH = 4000;
-      
-      let remainingText = formattedText;
-      
-      while (remainingText.length > 0) {
-        let chunk;
-        
-        if (remainingText.length <= MAX_LENGTH) {
-            chunk = remainingText;
-            remainingText = "";
-        } else {
-            let splitAt = remainingText.substring(0, MAX_LENGTH).lastIndexOf('\n');
-            if (splitAt === -1) splitAt = MAX_LENGTH;
-            chunk = remainingText.substring(0, splitAt);
-            remainingText = remainingText.substring(splitAt).trim();
-        }
-
-        const body = { chat_id: chatId, text: chunk, parse_mode: 'HTML' };
-        
-        const response = await fetch(url, { 
-          method: 'POST', 
-          headers: { 'Content-Type': 'application/json' }, 
-          body: JSON.stringify(body) 
-        });
-        
-        if (!response.ok) {
-           console.error(`[DO Alarm] Telegram Send Error: ${response.status}`, await response.text());
-           
-           // Fallback: invia senza formattazione se ci sono errori HTML (es. tag tagliati dallo split)
-           if (response.status === 400) {
-             // Rimuovi tag HTML per inviare testo pulito
-             body.text = chunk.replace(/<[^>]*>/g, '');
-             body.parse_mode = undefined;
-             await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-           }
-        }
-      }
+      // Usa la funzione condivisa dal modulo telegram.js
+      await sendMessage(chatId, text, this.env.TELEGRAM_BOT_TOKEN);
     }
   }
